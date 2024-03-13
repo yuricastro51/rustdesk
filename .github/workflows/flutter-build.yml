@@ -145,7 +145,7 @@ jobs:
           path: './flutter/build/windows/x64/runner/Release/'
 
       - name: Sign rustdesk files
-        if: env.UPLOAD_ARTIFACT == 'true'
+        if: false #env.UPLOAD_ARTIFACT == 'true'
         shell: bash
         run: |
           pip3 install requests argparse
@@ -262,7 +262,7 @@ jobs:
           fi
 
       - name: Sign rustdesk files
-        if: env.UPLOAD_ARTIFACT == 'true'
+        if: false #env.UPLOAD_ARTIFACT == 'true'
         shell: bash
         run: |
           pip3 install requests argparse
