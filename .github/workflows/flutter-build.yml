@@ -39,7 +39,7 @@ jobs:
     uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
     with:
       upload-artifact: ${{ inputs.upload-artifact }}
-      target: windows-2019
+      target: windows-latest
       configuration: Release
       platform: x64
       target_version: Windows10
@@ -56,7 +56,7 @@ jobs:
         job:
           # - { target: i686-pc-windows-msvc        , os: windows-2019                  }
           # - { target: x86_64-pc-windows-gnu       , os: windows-2019                  }
-          - { target: x86_64-pc-windows-msvc, os: windows-2019, arch: x86_64 }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, arch: x86_64 }
           # - { target: aarch64-pc-windows-msvc, os: windows-2019, arch: aarch64 }
     steps:
       - name: Export GitHub Actions cache environment variables
@@ -192,7 +192,7 @@ jobs:
         job:
           # - { target: i686-pc-windows-msvc        , os: windows-2019                  }
           # - { target: x86_64-pc-windows-gnu       , os: windows-2019                  }
-          - { target: i686-pc-windows-msvc, os: windows-2019, arch: x86 }
+          - { target: i686-pc-windows-msvc, os: windows-latest, arch: x86 }
           # - { target: aarch64-pc-windows-msvc, os: windows-2019 }
     steps:
       - name: Export GitHub Actions cache environment variables
