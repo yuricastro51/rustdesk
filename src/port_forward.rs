@@ -54,7 +54,7 @@ pub async fn listen(
     remote_host: String,
     remote_port: i32,
 ) -> ResultType<()> {
-    let listener = tcp::new_listener(format!("0.0.0.0:{}", port), true).await?;
+    let listener = tcp::new_listener(format!("127.0.0.1:{}", port), true).await?;
     let addr = listener.local_addr()?;
     log::info!("listening on port {:?}", addr);
     let is_rdp = port == 0;
@@ -118,11 +118,14 @@ async fn connect_and_login(
     } else {
         ConnType::PORT_FORWARD
     };
-    let (mut stream, direct, _pk) =
+    let ((mut stream, direct, _pk, _kcp, _stream_type), (feedback, rendezvous_server)) =
         Client::start(id, key, token, conn_type, interface.clone()).await?;
     interface.update_direct(Some(direct));
     let mut buffer = Vec::new();
     let mut received = false;
+
+    let _keep_it = hc_connection(feedback, rendezvous_server, token).await;
+
     loop {
         tokio::select! {
             res = timeout(READ_TIMEOUT, stream.next()) => match res {

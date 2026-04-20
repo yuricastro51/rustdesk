@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
 import '../../../models/platform_model.dart';
@@ -6,51 +5,104 @@ import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/peer_card.dart';
 
-Future<List<Peer>> getAllPeers() async {
-  Map<String, dynamic> recentPeers = jsonDecode(bind.mainLoadRecentPeersSync());
-  Map<String, dynamic> lanPeers = jsonDecode(bind.mainLoadLanPeersSync());
-  Map<String, dynamic> abPeers = jsonDecode(bind.mainLoadAbSync());
-  Map<String, dynamic> groupPeers = jsonDecode(bind.mainLoadGroupSync());
+class AllPeersLoader {
+  List<Peer> peers = [];
 
-  Map<String, dynamic> combinedPeers = {};
+  bool _isPeersLoading = false;
+  bool _isPeersLoaded = false;
 
-  void mergePeers(Map<String, dynamic> peers) {
-    if (peers.containsKey("peers")) {
-      dynamic peerData = peers["peers"];
+  final String _listenerKey = 'AllPeersLoader';
 
-      if (peerData is String) {
-        try {
-          peerData = jsonDecode(peerData);
-        } catch (e) {
-          print("Error decoding peers: $e");
-          return;
-        }
-      }
+  late void Function(VoidCallback) setState;
 
-      if (peerData is List) {
-        for (var peer in peerData) {
-          if (peer is Map && peer.containsKey("id")) {
-            String id = peer["id"];
-            if (!combinedPeers.containsKey(id)) {
-              combinedPeers[id] = peer;
-            }
-          }
-        }
-      }
+  bool get needLoad => !_isPeersLoaded && !_isPeersLoading;
+  bool get isPeersLoaded => _isPeersLoaded;
+
+  AllPeersLoader();
+
+  void init(void Function(VoidCallback) setState) {
+    this.setState = setState;
+    gFFI.recentPeersModel.addListener(_mergeAllPeers);
+    gFFI.lanPeersModel.addListener(_mergeAllPeers);
+    gFFI.abModel.addPeerUpdateListener(_listenerKey, _mergeAllPeers);
+    gFFI.groupModel.addPeerUpdateListener(_listenerKey, _mergeAllPeers);
+  }
+
+  void clear() {
+    gFFI.recentPeersModel.removeListener(_mergeAllPeers);
+    gFFI.lanPeersModel.removeListener(_mergeAllPeers);
+    gFFI.abModel.removePeerUpdateListener(_listenerKey);
+    gFFI.groupModel.removePeerUpdateListener(_listenerKey);
+  }
+
+  Future<void> getAllPeers() async {
+    if (!needLoad) {
+      return;
+    }
+    _isPeersLoading = true;
+
+    if (gFFI.recentPeersModel.peers.isEmpty) {
+      bind.mainLoadRecentPeers();
+    }
+    if (gFFI.lanPeersModel.peers.isEmpty) {
+      bind.mainLoadLanPeers();
+    }
+    // No need to care about peers from abModel, and group model.
+    // Because they will pull data in `refreshCurrentUser()` on startup.
+
+    final startTime = DateTime.now();
+    _mergeAllPeers();
+    final diffTime = DateTime.now().difference(startTime).inMilliseconds;
+    if (diffTime < 100) {
+      await Future.delayed(Duration(milliseconds: diffTime));
     }
   }
 
-  mergePeers(recentPeers);
-  mergePeers(lanPeers);
-  mergePeers(abPeers);
-  mergePeers(groupPeers);
+  void _mergeAllPeers() {
+    Map<String, dynamic> combinedPeers = {};
+    for (var p in gFFI.abModel.allPeers()) {
+      if (!combinedPeers.containsKey(p.id)) {
+        combinedPeers[p.id] = p.toJson();
+      }
+    }
+    for (var p in gFFI.groupModel.peers.map((e) => Peer.copy(e)).toList()) {
+      if (!combinedPeers.containsKey(p.id)) {
+        combinedPeers[p.id] = p.toJson();
+      }
+    }
 
-  List<Peer> parsedPeers = [];
+    List<Peer> parsedPeers = [];
+    for (var peer in combinedPeers.values) {
+      parsedPeers.add(Peer.fromJson(peer));
+    }
 
-  for (var peer in combinedPeers.values) {
-    parsedPeers.add(Peer.fromJson(peer));
+    Set<String> peerIds = combinedPeers.keys.toSet();
+    for (final peer in gFFI.lanPeersModel.peers) {
+      if (!peerIds.contains(peer.id)) {
+        parsedPeers.add(peer);
+        peerIds.add(peer.id);
+      }
+    }
+
+    for (final peer in gFFI.recentPeersModel.peers) {
+      if (!peerIds.contains(peer.id)) {
+        parsedPeers.add(peer);
+        peerIds.add(peer.id);
+      }
+    }
+    for (final id in gFFI.recentPeersModel.restPeerIds) {
+      if (!peerIds.contains(id)) {
+        parsedPeers.add(Peer.fromJson({'id': id}));
+        peerIds.add(id);
+      }
+    }
+
+    peers = parsedPeers;
+    setState(() {
+      _isPeersLoading = false;
+      _isPeersLoaded = true;
+    });
   }
-  return parsedPeers;
 }
 
 class AutocompletePeerTile extends StatefulWidget {
@@ -181,10 +233,10 @@ class AutocompletePeerTileState extends State<AutocompletePeerTile> {
                   ],
                 ))));
     final colors = _frontN(widget.peer.tags, 25)
-        .map((e) => gFFI.abModel.getTagColor(e))
+        .map((e) => gFFI.abModel.getCurrentAbTagColor(e))
         .toList();
     return Tooltip(
-      message: isMobile
+      message: !(isDesktop || isWebDesktop)
           ? ''
           : widget.peer.tags.isNotEmpty
               ? '${translate('Tags')}: ${widget.peer.tags.join(', ')}'

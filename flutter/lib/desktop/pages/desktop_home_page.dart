@@ -12,17 +12,18 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/connection_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
-import 'package:flutter_hbb/desktop/widgets/scroll_wrapper.dart';
+import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
+import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/plugin/ui_manager.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
+import 'package:flutter_hbb/utils/platform_channel.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:window_size/window_size.dart' as window_size;
-
 import '../widgets/button.dart';
 
 class DesktopHomePage extends StatefulWidget {
@@ -35,12 +36,11 @@ class DesktopHomePage extends StatefulWidget {
 const borderColor = Color(0xFF2F65BA);
 
 class _DesktopHomePageState extends State<DesktopHomePage>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final _leftPaneScrollController = ScrollController();
 
   @override
   bool get wantKeepAlive => true;
-  var updateUrl = '';
   var systemError = '';
   StreamSubscription? _uniLinksSubscription;
   var svcStopped = false.obs;
@@ -51,38 +51,59 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   Timer? _updateTimer;
   bool isCardClosed = false;
 
+  final RxBool _editHover = false.obs;
+  final RxBool _block = false.obs;
+
   final GlobalKey _childKey = GlobalKey();
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-
-    final children = [buildLeftPane(context)];
-    if (!bind.isIncomingOnly()) {
-      children.addAll([
-        const VerticalDivider(width: 1),
-        Expanded(child: buildRightPane(context)),
-      ]);
-    }
-    return Row(
+    final isIncomingOnly = bind.isIncomingOnly();
+    return _buildBlock(
+        child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: children,
-    );
+      children: [
+        buildLeftPane(context),
+        if (!isIncomingOnly) const VerticalDivider(width: 1),
+        if (!isIncomingOnly) Expanded(child: buildRightPane(context)),
+      ],
+    ));
+  }
+
+  Widget _buildBlock({required Widget child}) {
+    return buildRemoteBlock(
+        block: _block, mask: true, use: canBeBlocked, child: child);
   }
 
   Widget buildLeftPane(BuildContext context) {
+    final isIncomingOnly = bind.isIncomingOnly();
+    final isOutgoingOnly = bind.isOutgoingOnly();
     final children = <Widget>[
+      if (!isOutgoingOnly) buildPresetPasswordWarning(),
+      if (bind.isCustomClient())
+        Align(
+          alignment: Alignment.center,
+          child: loadPowered(context),
+        ),
+      Align(
+        alignment: Alignment.center,
+        child: loadLogo(),
+      ),
       buildTip(context),
-      buildIDBoard(context),
-      buildPasswordBoard(context),
+      if (!isOutgoingOnly) buildIDBoard(context),
+      if (!isOutgoingOnly) buildPasswordBoard(context),
       FutureBuilder<Widget>(
-        future: buildHelpCards(),
+        future: Future.value(
+            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
         builder: (_, data) {
           if (data.hasData) {
-            if (bind.isIncomingOnly()) {
-              Future.delayed(Duration(milliseconds: 300), () {
-                _updateWindowSize();
-              });
+            if (isIncomingOnly) {
+              if (isInHomePage()) {
+                Future.delayed(Duration(milliseconds: 300), () {
+                  _updateWindowSize();
+                });
+              }
             }
             return data.data!;
           } else {
@@ -92,30 +113,68 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       ),
       buildPluginEntry(),
     ];
-    if (bind.isIncomingOnly()) {
+    if (isIncomingOnly) {
       children.addAll([
         Divider(),
-        Container(
-          margin: EdgeInsets.fromLTRB(0, 0, 8, 6),
-          child: OnlineStatusWidget(),
-        ),
+        OnlineStatusWidget(
+          onSvcStatusChanged: () {
+            if (isInHomePage()) {
+              Future.delayed(Duration(milliseconds: 300), () {
+                _updateWindowSize();
+              });
+            }
+          },
+        ).marginOnly(bottom: 6, right: 6)
       ]);
     }
+    final textColor = Theme.of(context).textTheme.titleLarge?.color;
     return ChangeNotifierProvider.value(
       value: gFFI.serverModel,
       child: Container(
-        width: bind.isIncomingOnly() ? 280.0 : 200.0,
+        width: isIncomingOnly ? 280.0 : 200.0,
         color: Theme.of(context).colorScheme.background,
-        child: DesktopScrollWrapper(
-          scrollController: _leftPaneScrollController,
-          child: SingleChildScrollView(
-            controller: _leftPaneScrollController,
-            physics: DraggableNeverScrollableScrollPhysics(),
-            child: Column(
-              key: _childKey,
-              children: children,
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                SingleChildScrollView(
+                  controller: _leftPaneScrollController,
+                  child: Column(
+                    key: _childKey,
+                    children: children,
+                  ),
+                ),
+                Expanded(child: Container())
+              ],
             ),
-          ),
+            if (isOutgoingOnly)
+              Positioned(
+                bottom: 6,
+                left: 12,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: InkWell(
+                    child: Obx(
+                      () => Icon(
+                        Icons.settings,
+                        color: _editHover.value
+                            ? textColor
+                            : Colors.grey.withOpacity(0.5),
+                        size: 22,
+                      ),
+                    ),
+                    onTap: () => {
+                      if (DesktopSettingPage.tabKeys.isNotEmpty)
+                        {
+                          DesktopSettingPage.switch2page(
+                              DesktopSettingPage.tabKeys[0])
+                        }
+                    },
+                    onHover: (value) => _editHover.value = value,
+                  ),
+                ),
+              )
+          ],
         ),
       ),
     );
@@ -184,7 +243,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                         style: TextStyle(
                           fontSize: 22,
                         ),
-                      ),
+                      ).workaroundFreezeLinuxMint(),
                     ),
                   )
                 ],
@@ -201,19 +260,20 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     RxBool hover = false.obs;
     return InkWell(
       onTap: DesktopTabPage.onAddSetting,
-      child: Obx(
-        () => CircleAvatar(
-          radius: 15,
-          backgroundColor: hover.value
-              ? Theme.of(context).scaffoldBackgroundColor
-              : Theme.of(context).colorScheme.background,
-          child: Tooltip(
-              message: translate('Settings'),
-              child: Icon(
-                Icons.more_vert_outlined,
-                size: 20,
-                color: hover.value ? textColor : textColor?.withOpacity(0.5),
-              )),
+      child: Tooltip(
+        message: translate('Settings'),
+        child: Obx(
+          () => CircleAvatar(
+            radius: 15,
+            backgroundColor: hover.value
+                ? Theme.of(context).scaffoldBackgroundColor
+                : Theme.of(context).colorScheme.background,
+            child: Icon(
+              Icons.more_vert_outlined,
+              size: 20,
+              color: hover.value ? textColor : textColor?.withOpacity(0.5),
+            ),
+          ),
         ),
       ),
       onHover: (value) => hover.value = value,
@@ -221,10 +281,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   }
 
   buildPasswordBoard(BuildContext context) {
-    final model = gFFI.serverModel;
+    return ChangeNotifierProvider.value(
+        value: gFFI.serverModel,
+        child: Consumer<ServerModel>(
+          builder: (context, model, child) {
+            return buildPasswordBoard2(context, model);
+          },
+        ));
+  }
+
+  buildPasswordBoard2(BuildContext context, ServerModel model) {
     RxBool refreshHover = false.obs;
     RxBool editHover = false.obs;
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
+    final showOneTime = model.approveMode != 'click' &&
+        model.verificationMethod != kUsePermanentPassword;
     return Container(
       margin: EdgeInsets.only(left: 20.0, right: 16, top: 13, bottom: 13),
       child: Row(
@@ -253,8 +324,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                       Expanded(
                         child: GestureDetector(
                           onDoubleTap: () {
-                            if (model.verificationMethod !=
-                                kUsePermanentPassword) {
+                            if (showOneTime) {
                               Clipboard.setData(
                                   ClipboardData(text: model.serverPasswd.text));
                               showToast(translate("Copied"));
@@ -269,39 +339,44 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                                   EdgeInsets.only(top: 14, bottom: 10),
                             ),
                             style: TextStyle(fontSize: 15),
-                          ),
+                          ).workaroundFreezeLinuxMint(),
                         ),
                       ),
-                      AnimatedRotationWidget(
-                        onPressed: () => bind.mainUpdateTemporaryPassword(),
-                        child: Obx(() => RotatedBox(
-                            quarterTurns: 2,
-                            child: Tooltip(
-                                message: translate('Refresh Password'),
+                      if (showOneTime)
+                        AnimatedRotationWidget(
+                          onPressed: () => bind.mainUpdateTemporaryPassword(),
+                          child: Tooltip(
+                            message: translate('Refresh Password'),
+                            child: Obx(() => RotatedBox(
+                                quarterTurns: 2,
                                 child: Icon(
                                   Icons.refresh,
                                   color: refreshHover.value
                                       ? textColor
                                       : Color(0xFFDDDDDD),
                                   size: 22,
-                                )))),
-                        onHover: (value) => refreshHover.value = value,
-                      ).marginOnly(right: 8, top: 4),
-                      InkWell(
-                        child: Obx(
-                          () => Tooltip(
-                              message: translate('Change Password'),
-                              child: Icon(
+                                ))),
+                          ),
+                          onHover: (value) => refreshHover.value = value,
+                        ).marginOnly(right: 8, top: 4),
+                      if (!bind.isDisableSettings())
+                        InkWell(
+                          child: Tooltip(
+                            message: translate('Change Password'),
+                            child: Obx(
+                              () => Icon(
                                 Icons.edit,
                                 color: editHover.value
                                     ? textColor
                                     : Color(0xFFDDDDDD),
                                 size: 22,
-                              )).marginOnly(right: 8, top: 4),
+                              ).marginOnly(right: 8, top: 4),
+                            ),
+                          ),
+                          onTap: () => DesktopSettingPage.switch2page(
+                              SettingsTabKey.safety),
+                          onHover: (value) => editHover.value = value,
                         ),
-                        onTap: () => DesktopSettingPage.switch2page(1),
-                        onHover: (value) => editHover.value = value,
-                      ),
                     ],
                   ),
                 ],
@@ -314,6 +389,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   }
 
   buildTip(BuildContext context) {
+    final isOutgoingOnly = bind.isOutgoingOnly();
     return Padding(
       padding:
           const EdgeInsets.only(left: 20.0, right: 16, top: 16.0, bottom: 5),
@@ -321,45 +397,74 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         mainAxisAlignment: MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            translate("Your Desktop"),
-            style: Theme.of(context).textTheme.titleLarge,
-            // style: TextStyle(
-            //     // color: MyTheme.color(context).text,
-            //     fontWeight: FontWeight.normal,
-            //     fontSize: 19),
+          Column(
+            children: [
+              if (!isOutgoingOnly)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    translate("Your Desktop"),
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+            ],
           ),
           SizedBox(
             height: 10.0,
           ),
-          Text(
-            translate("desk_tip"),
-            overflow: TextOverflow.clip,
-            style: Theme.of(context).textTheme.bodySmall,
-          )
+          if (!isOutgoingOnly)
+            Text(
+              translate("desk_tip"),
+              overflow: TextOverflow.clip,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          if (isOutgoingOnly)
+            Text(
+              translate("outgoing_only_desk_tip"),
+              overflow: TextOverflow.clip,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
         ],
       ),
     );
   }
 
-  Future<Widget> buildHelpCards() async {
-    if (updateUrl.isNotEmpty &&
+  Widget buildHelpCards(String updateUrl) {
+    if (!bind.isCustomClient() &&
+        updateUrl.isNotEmpty &&
         !isCardClosed &&
         bind.mainUriPrefixSync().contains('rustdesk')) {
-      return buildInstallCard(
-          "Status",
-          "There is a newer version of ${bind.mainGetAppNameSync()} ${bind.mainGetNewVersion()} available.",
-          "Click to download", () async {
+      final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
+      String btnText = isToUpdate ? 'Update' : 'Download';
+      GestureTapCallback onPressed = () async {
         final Uri url = Uri.parse('https://rustdesk.com/download');
         await launchUrl(url);
-      }, closeButton: true);
+      };
+      if (isToUpdate) {
+        onPressed = () {
+          handleUpdate(updateUrl);
+        };
+      }
+      return buildInstallCard(
+          "Status",
+          "${translate("new-version-of-{${bind.mainGetAppNameSync()}}-tip")} (${bind.mainGetNewVersion()}).",
+          btnText,
+          onPressed,
+          closeButton: true,
+          help: isToUpdate ? 'Changelog' : null,
+          link: isToUpdate
+              ? 'https://github.com/rustdesk/rustdesk/releases/tag/${bind.mainGetNewVersion()}'
+              : null);
     }
     if (systemError.isNotEmpty) {
       return buildInstallCard("", systemError, "", () {});
     }
-    if (Platform.isWindows) {
+
+    if (isWindows && !bind.isDisableInstallation()) {
       if (!bind.mainIsInstalled()) {
-        return buildInstallCard("", "install_tip", "Install", () async {
+        return buildInstallCard(
+            "", bind.isOutgoingOnly() ? "" : "install_tip", "Install",
+            () async {
           await rustDeskWinManager.closeAllSubWindows();
           bind.mainGotoInstall();
         });
@@ -371,14 +476,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           bind.mainUpdateMe();
         });
       }
-    } else if (Platform.isMacOS) {
-      if (!bind.mainIsCanScreenRecording(prompt: false)) {
+    } else if (isMacOS) {
+      final isOutgoingOnly = bind.isOutgoingOnly();
+      if (!(isOutgoingOnly || bind.mainIsCanScreenRecording(prompt: false))) {
         return buildInstallCard("Permissions", "config_screen", "Configure",
             () async {
           bind.mainIsCanScreenRecording(prompt: true);
           watchIsCanScreenRecording = true;
         }, help: 'Help', link: translate("doc_mac_permission"));
-      } else if (!bind.mainIsProcessTrusted(prompt: false)) {
+      } else if (!isOutgoingOnly && !bind.mainIsProcessTrusted(prompt: false)) {
         return buildInstallCard("Permissions", "config_acc", "Configure",
             () async {
           bind.mainIsProcessTrusted(prompt: true);
@@ -390,7 +496,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           bind.mainIsCanInputMonitoring(prompt: true);
           watchIsInputMonitoring = true;
         }, help: 'Help', link: translate("doc_mac_permission"));
-      } else if (!svcStopped.value &&
+      } else if (!isOutgoingOnly &&
+          !svcStopped.value &&
           bind.mainIsInstalled() &&
           !bind.mainIsInstalledDaemon(prompt: false)) {
         return buildInstallCard("", "install_daemon_tip", "Install", () async {
@@ -406,7 +513,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       //     watchIsCanRecordAudio = true;
       //   });
       // }
-    } else if (Platform.isLinux) {
+    } else if (isLinux) {
+      if (bind.isOutgoingOnly()) {
+        return Container();
+      }
       final LinuxCards = <Widget>[];
       if (bind.isSelinuxEnforcing()) {
         // Check is SELinux enforcing, but show user a tip of is SELinux enabled for simple.
@@ -445,6 +555,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         );
       }
     }
+    if (bind.isIncomingOnly()) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: OutlinedButton(
+          onPressed: () {
+            SystemNavigator.pop(); // Close the application
+            // https://github.com/flutter/flutter/issues/66631
+            if (isWindows) {
+              exit(0);
+            }
+          },
+          child: Text(translate('Quit')),
+        ),
+      ).marginAll(14);
+    }
     return Container();
   }
 
@@ -455,6 +580,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       String? link,
       bool? closeButton,
       String? closeOption}) {
+    if (bind.mainGetBuildinOption(key: kOptionHideHelpCards) == 'Y' &&
+        content != 'install_daemon_tip') {
+      return const SizedBox();
+    }
     void closeCard() async {
       if (closeOption != null) {
         await bind.mainSetLocalOption(key: closeOption, value: 'N');
@@ -473,8 +602,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     return Stack(
       children: [
         Container(
-          margin:
-              EdgeInsets.fromLTRB(0, marginTop, 0, bind.isIncomingOnly() ? marginTop : 0),
+          margin: EdgeInsets.fromLTRB(
+              0, marginTop, 0, bind.isIncomingOnly() ? marginTop : 0),
           child: Container(
               decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -502,14 +631,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                             ]
                           : <Widget>[]) +
                       <Widget>[
-                        Text(
-                          translate(content),
-                          style: TextStyle(
-                              height: 1.5,
-                              color: Colors.white,
-                              fontWeight: FontWeight.normal,
-                              fontSize: 13),
-                        ).marginOnly(bottom: 20)
+                        if (content.isNotEmpty)
+                          Text(
+                            translate(content),
+                            style: TextStyle(
+                                height: 1.5,
+                                color: Colors.white,
+                                fontWeight: FontWeight.normal,
+                                fontSize: 13),
+                          ).marginOnly(bottom: 20)
                       ] +
                       (btnText.isNotEmpty
                           ? <Widget>[
@@ -567,10 +697,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   void initState() {
     super.initState();
-    Timer(const Duration(seconds: 1), () async {
-      updateUrl = await bind.mainGetSoftwareUpdateUrl();
-      if (updateUrl.isNotEmpty) setState(() {});
-    });
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();
@@ -578,7 +704,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         systemError = error;
         setState(() {});
       }
-      final v = await bind.mainGetOption(key: "stop-service") == "Y";
+      final v = await mainGetBoolOption(kOptionStopService);
       if (v != svcStopped.value) {
         svcStopped.value = v;
         setState(() {});
@@ -606,7 +732,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         }
       }
       if (watchIsCanRecordAudio) {
-        if (Platform.isMacOS) {
+        if (isMacOS) {
           Future.microtask(() async {
             if ((await osxCanRecordAudio() ==
                 PermissionAuthorizeType.authorized)) {
@@ -639,11 +765,23 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           'scaleFactor': screen.scaleFactor,
         };
 
+    bool isChattyMethod(String methodName) {
+      switch (methodName) {
+        case kWindowBumpMouse: return true;
+      }
+
+      return false;
+    }
+
     rustDeskWinManager.setMethodHandler((call, fromWindowId) async {
-      debugPrint(
+      if (!isChattyMethod(call.method)) {
+        debugPrint(
           "[Main] call ${call.method} with args ${call.arguments} from window $fromWindowId");
+      }
       if (call.method == kWindowMainWindowOnTop) {
         windowOnTop(null);
+      } else if (call.method == kWindowRefreshCurrentUser) {
+        gFFI.userModel.refreshCurrentUser();
       } else if (call.method == kWindowGetWindowInfo) {
         final screen = (await window_size.getWindowInfo()).screen;
         if (screen == null) {
@@ -664,10 +802,18 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         await connectMainDesktop(
           call.arguments['id'],
           isFileTransfer: call.arguments['isFileTransfer'],
+          isViewCamera: call.arguments['isViewCamera'],
+          isTerminal: call.arguments['isTerminal'],
           isTcpTunneling: call.arguments['isTcpTunneling'],
           isRDP: call.arguments['isRDP'],
+          password: call.arguments['password'],
           forceRelay: call.arguments['forceRelay'],
+          connToken: call.arguments['connToken'],
         );
+      } else if (call.method == kWindowBumpMouse) {
+        return RdPlatformChannel.instance.bumpMouse(
+          dx: call.arguments['dx'],
+          dy: call.arguments['dy']);
       } else if (call.method == kWindowEventMoveTabToNewWindow) {
         final args = call.arguments.split(',');
         int? windowId;
@@ -676,9 +822,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         } catch (e) {
           debugPrint("Failed to parse window id '${call.arguments}': $e");
         }
-        if (windowId != null) {
+        WindowType? windowType;
+        try {
+          windowType = WindowType.values.byName(args[3]);
+        } catch (e) {
+          debugPrint("Failed to parse window type '${call.arguments}': $e");
+        }
+        if (windowId != null && windowType != null) {
           await rustDeskWinManager.moveTabToNewWindow(
-              windowId, args[1], args[2]);
+              windowId, args[1], args[2], windowType);
         }
       } else if (call.method == kWindowEventOpenMonitorSession) {
         final args = jsonDecode(call.arguments);
@@ -686,9 +838,16 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         final peerId = args['peer_id'] as String;
         final display = args['display'] as int;
         final displayCount = args['display_count'] as int;
+        final windowType = args['window_type'] as int;
         final screenRect = parseParamScreenRect(args);
         await rustDeskWinManager.openMonitorSession(
-            windowId, peerId, display, displayCount, screenRect);
+            windowId, peerId, display, displayCount, screenRect, windowType);
+      } else if (call.method == kWindowEventRemoteWindowCoords) {
+        final windowId = int.tryParse(call.arguments);
+        if (windowId != null) {
+          return jsonEncode(
+              await rustDeskWinManager.getOtherRemoteWindowCoords(windowId));
+        }
       }
     });
     _uniLinksSubscription = listenUniLinks();
@@ -698,13 +857,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         _updateWindowSize();
       });
     }
+    WidgetsBinding.instance.addObserver(this);
   }
 
   _updateWindowSize() {
-    RenderBox renderBox =
-        _childKey.currentContext?.findRenderObject() as RenderBox;
-    desktopQsHomeLeftPaneSize = renderBox.size;
-    windowManager.setSize(getDesktopQsHomeSize());
+    RenderObject? renderObject = _childKey.currentContext?.findRenderObject();
+    if (renderObject == null) {
+      return;
+    }
+    if (renderObject is RenderBox) {
+      final size = renderObject.size;
+      if (size != imcomingOnlyHomeSize) {
+        imcomingOnlyHomeSize = size;
+        windowManager.setSize(getIncomingOnlyHomeSize());
+      }
+    }
   }
 
   @override
@@ -712,7 +879,16 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     _uniLinksSubscription?.cancel();
     Get.delete<RxBool>(tag: 'stop-service');
     _updateTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      shouldBeBlocked(_block, canBeBlocked);
+    }
   }
 
   Widget buildPluginEntry() {
@@ -731,13 +907,18 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   }
 }
 
-void setPasswordDialog() async {
-  final pw = await bind.mainGetPermanentPassword();
-  final p0 = TextEditingController(text: pw);
-  final p1 = TextEditingController(text: pw);
+void setPasswordDialog({VoidCallback? notEmptyCallback}) async {
+  final p0 = TextEditingController(text: "");
+  final p1 = TextEditingController(text: "");
   var errMsg0 = "";
   var errMsg1 = "";
-  final RxString rxPass = pw.trim().obs;
+  final localPasswordSet =
+      (await bind.mainGetCommon(key: "local-permanent-password-set")) == "true";
+  final permanentPasswordSet =
+      (await bind.mainGetCommon(key: "permanent-password-set")) == "true";
+  final presetPassword = permanentPasswordSet && !localPasswordSet;
+  var canSubmit = false;
+  final RxString rxPass = "".obs;
   final rules = [
     DigitValidationRule(),
     UppercaseValidationRule(),
@@ -745,9 +926,22 @@ void setPasswordDialog() async {
     // SpecialCharacterValidationRule(),
     MinCharactersValidationRule(8),
   ];
+  final maxLength = bind.mainMaxEncryptLen();
+  final statusTip = localPasswordSet
+      ? translate('password-hidden-tip')
+      : (presetPassword ? translate('preset-password-in-use-tip') : '');
+  final showStatusTipOnMobile =
+      statusTip.isNotEmpty && !isDesktop && !isWebDesktop;
 
   gFFI.dialogManager.show((setState, close, context) {
-    submit() {
+    updateCanSubmit() {
+      canSubmit = p0.text.trim().isNotEmpty || p1.text.trim().isNotEmpty;
+    }
+
+    submit() async {
+      if (!canSubmit) {
+        return;
+      }
       setState(() {
         errMsg0 = "";
         errMsg1 = "";
@@ -770,19 +964,34 @@ void setPasswordDialog() async {
         });
         return;
       }
-      bind.mainSetPermanentPassword(password: pass);
+      final ok = await bind.mainSetPermanentPasswordWithResult(password: pass);
+      if (!ok) {
+        setState(() {
+          errMsg0 = '${translate('Prompt')}: ${translate("Failed")}';
+        });
+        return;
+      }
+      if (pass.isNotEmpty) {
+        notEmptyCallback?.call();
+      }
       close();
     }
 
     return CustomAlertDialog(
-      title: Text(translate("Set Password")),
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.key, color: MyTheme.accent),
+          Text(translate("Set Password")).paddingOnly(left: 10),
+        ],
+      ),
       content: ConstrainedBox(
         constraints: const BoxConstraints(minWidth: 500),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SizedBox(
-              height: 8.0,
+            SizedBox(
+              height: showStatusTipOnMobile ? 0.0 : 6.0,
             ),
             Row(
               children: [
@@ -798,9 +1007,11 @@ void setPasswordDialog() async {
                       rxPass.value = value.trim();
                       setState(() {
                         errMsg0 = '';
+                        updateCanSubmit();
                       });
                     },
-                  ),
+                    maxLength: maxLength,
+                  ).workaroundFreezeLinuxMint(),
                 ),
               ],
             ),
@@ -808,9 +1019,9 @@ void setPasswordDialog() async {
               children: [
                 Expanded(child: PasswordStrengthIndicator(password: rxPass)),
               ],
-            ).marginSymmetric(vertical: 8),
-            const SizedBox(
-              height: 8.0,
+            ).marginOnly(top: 2, bottom: showStatusTipOnMobile ? 2 : 8),
+            SizedBox(
+              height: showStatusTipOnMobile ? 0.0 : 8.0,
             ),
             Row(
               children: [
@@ -824,17 +1035,31 @@ void setPasswordDialog() async {
                     onChanged: (value) {
                       setState(() {
                         errMsg1 = '';
+                        updateCanSubmit();
                       });
                     },
-                  ),
+                    maxLength: maxLength,
+                  ).workaroundFreezeLinuxMint(),
                 ),
               ],
             ),
-            const SizedBox(
-              height: 8.0,
+            if (statusTip.isNotEmpty)
+              Row(
+                children: [
+                  Icon(Icons.info, color: Colors.amber, size: 18)
+                      .marginOnly(right: 6),
+                  Expanded(
+                      child: Text(
+                    statusTip,
+                    style: const TextStyle(fontSize: 13, height: 1.1),
+                  ))
+                ],
+              ).marginOnly(top: 6, bottom: 2),
+            SizedBox(
+              height: showStatusTipOnMobile ? 0.0 : 8.0,
             ),
             Obx(() => Wrap(
-                  runSpacing: 8,
+                  runSpacing: showStatusTipOnMobile ? 2.0 : 8.0,
                   spacing: 4,
                   children: rules.map((e) {
                     var checked = e.validate(rxPass.value.trim());
@@ -854,11 +1079,67 @@ void setPasswordDialog() async {
           ],
         ),
       ),
-      actions: [
-        dialogButton("Cancel", onPressed: close, isOutline: true),
-        dialogButton("OK", onPressed: submit),
-      ],
-      onSubmit: submit,
+      actions: (() {
+        final cancelButton = dialogButton(
+          "Cancel",
+          icon: Icon(Icons.close_rounded),
+          onPressed: close,
+          isOutline: true,
+        );
+        final removeButton = dialogButton(
+          "Remove",
+          icon: Icon(Icons.delete_outline_rounded),
+          onPressed: () async {
+            setState(() {
+              errMsg0 = "";
+              errMsg1 = "";
+            });
+            final ok =
+                await bind.mainSetPermanentPasswordWithResult(password: "");
+            if (!ok) {
+              setState(() {
+                errMsg0 = '${translate('Prompt')}: ${translate("Failed")}';
+              });
+              return;
+            }
+            close();
+          },
+          buttonStyle: ButtonStyle(
+              backgroundColor: MaterialStatePropertyAll(Colors.red)),
+        );
+        final okButton = dialogButton(
+          "OK",
+          icon: Icon(Icons.done_rounded),
+          onPressed: canSubmit ? submit : null,
+        );
+        if (!isDesktop && !isWebDesktop && localPasswordSet) {
+          return [
+            Align(
+              alignment: Alignment.centerRight,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    cancelButton,
+                    const SizedBox(width: 4),
+                    removeButton,
+                    const SizedBox(width: 4),
+                    okButton,
+                  ],
+                ),
+              ),
+            ),
+          ];
+        }
+        return [
+          cancelButton,
+          if (localPasswordSet) removeButton,
+          okButton,
+        ];
+      })(),
+      onSubmit: canSubmit ? submit : null,
       onCancel: close,
     );
   });
