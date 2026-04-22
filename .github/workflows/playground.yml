@@ -466,6 +466,16 @@ jobs:
           name: bridge-artifact
           path: ./
 
+      - name: Embed custom server config
+        if: env.RENDEZVOUS_SERVER != '' && env.RS_PUB_KEY != ''
+        shell: bash
+        run: |
+          CONFIG=libs/hbb_common/src/config.rs
+          sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.RS_PUB_KEY }}|g" "$CONFIG"
+          sed -i 's|&\["rs-ny\.rustdesk\.com"\]|\&["${{ env.RENDEZVOUS_SERVER }}"]|g' "$CONFIG"
+          echo "=== Custom server config applied ==="
+          grep -E "RS_PUB_KEY|RENDEZVOUS_SERVERS" "$CONFIG"
+
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v1
         with:
