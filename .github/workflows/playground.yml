@@ -463,7 +463,7 @@ jobs:
       - name: Embed custom server config
         shell: bash
         run: |
-          sed -i 's/PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new(".*")/PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new("177.104.164.207")/' libs/hbb_common/src/config.rs
+          sed -i 's/PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new(".*"\.to_owned())/PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new("177.104.164.207".to_owned())/' libs/hbb_common/src/config.rs
           sed -i 's/pub const RENDEZVOUS_SERVERS:.*/pub const RENDEZVOUS_SERVERS: \&[\&str] = \&["177.104.164.207"];/' libs/hbb_common/src/config.rs
           sed -i 's/pub const RS_PUB_KEY:.*/pub const RS_PUB_KEY: \&str = "hHQ8QFeqZxvoxf8WedlbYBrZplP3b7xXQu5Bd5tPVz0=";/' libs/hbb_common/src/config.rs
           grep -E "PROD_RENDEZVOUS_SERVER|RENDEZVOUS_SERVERS|RS_PUB_KEY" libs/hbb_common/src/config.rs | head -5
